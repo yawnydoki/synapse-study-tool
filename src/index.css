@@ -1,0 +1,197 @@
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+
+:root {
+  /* Dark Academia Palette */
+  --bg: #1a1714;          /* Deep espresso/charcoal */
+  --surface: #26221f;     /* Leather/wood tone */
+  --text: #d4c8b8;        /* Parchment/old paper */
+  --text-muted: #8c7f70;  /* Faded ink */
+  --primary: #7a2e33;     /* Deep Burgundy */
+  --accent: #b5986d;      /* Antique Gold/Brass */
+  --border: #3d342b;
+  --radius: 6px;          /* Sharper, book-like corners */
+  --shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+  --font-main: 'Lora', Georgia, serif;
+  
+  /* Quiz Colors */
+  --correct: #3f5235;     /* Muted Olive */
+  --incorrect: #6e2a2a;   /* Rust */
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-main);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  /* Adds a very subtle paper/fabric texture */
+  background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%232a241e' fill-opacity='0.4'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+* { box-sizing: border-box; }
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+}
+
+input, textarea, select {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: #141210;
+  color: var(--text);
+  font-family: inherit;
+  margin-top: 5px;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+button {
+  background-color: var(--primary);
+  color: #e8e4c9;
+  border: 1px solid #5a2025;
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.5px;
+}
+
+button:hover { 
+  background-color: #8c363b; 
+  border-color: var(--accent);
+}
+
+button:disabled { 
+  background-color: var(--surface); 
+  color: var(--text-muted);
+  border-color: var(--border);
+  cursor: not-allowed; 
+}
+
+.card {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+a { color: var(--accent); text-decoration: none; font-weight: bold; transition: opacity 0.2s; }
+a:hover { opacity: 0.8; }
+
+/* Real Button Styles for Navigation */
+.nav-link {
+  background-color: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  display: inline-block;
+}
+
+.nav-link:hover {
+  background-color: var(--primary); /* Turns burgundy on hover */
+  color: #e8e4c9;
+  border-color: var(--accent); /* Gold border */
+  transform: translateY(-2px); /* Lifts up slightly */
+  box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+}
+
+.nav-link:active {
+  transform: translateY(0); /* Presses down when clicked */
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.header-container {
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center; 
+  margin-bottom: 40px; 
+  border-bottom: 1px solid var(--border); 
+  padding-bottom: 20px;
+}
+
+@media (max-width: 600px) {
+  .header-container {
+    flex-direction: column;
+    gap: 20px;
+    align-items: flex-start;
+  }
+}
+
+/* 3D Flashcard Physics */
+.flashcard-wrapper {
+  perspective: 1000px; /* Gives the 3D depth */
+  width: 100%;
+  min-height: 280px;
+}
+
+.flashcard-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+  text-align: center;
+  transition: transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1); /* Smooth, book-like flip */
+  transform-style: preserve-3d;
+}
+
+.flashcard-wrapper.flipped .flashcard-inner {
+  transform: rotateX(180deg); /* Flips vertically like a notepad. Change to rotateY(180deg) for a book page turn. */
+}
+
+/* Front and Back face styling */
+.flashcard-front, .flashcard-back {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+  border-radius: var(--radius);
+  font-size: 1.25rem;
+  box-shadow: var(--shadow);
+}
+
+.flashcard-front {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.flashcard-back {
+  background-color: var(--bg);
+  border: 1px solid var(--accent); /* Glows gold when flipped */
+  color: var(--text);
+  transform: rotateX(180deg); /* Must match the inner rotation axis */
+}
+
+/* MCQ Slide Animation */
+@keyframes inkFadeIn {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.slide-in {
+  animation: inkFadeIn 0.4s ease-out forwards;
+}
