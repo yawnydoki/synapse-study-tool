@@ -1,164 +1,348 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { db } from './firebase';
-import { collection, getDocs, doc, deleteDoc } from 'firebase/firestore'; 
+import {
+  collection, getDocs, doc,
+  deleteDoc, updateDoc, serverTimestamp,
+} from 'firebase/firestore';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import Flashcard from './Flashcard';
 import MultipleChoice from './MultipleChoice';
+import { calculateNextReview, isDue, sortByDue } from './spacedRepetition';
 
+// ── Quiz remarks ──────────────────────────────────────────────────
+const REMARKS = [
+  { floor: 90, text: 'Exemplary. The material is yours.'                },
+  { floor: 75, text: 'Well done. A solid command of the subject.'       },
+  { floor: 60, text: 'Satisfactory. A second reading would not go amiss.' },
+  { floor: 40, text: 'Needs revision. Return to your notes.'            },
+  { floor:  0, text: 'The work begins anew. Do not be discouraged.'     },
+];
+function getRemark(pct) {
+  return REMARKS.find((r) => pct >= r.floor)?.text ?? REMARKS[REMARKS.length - 1].text;
+}
+
+// ── Flashcard session summary ─────────────────────────────────────
+function FlashcardSummary({ total, elapsed, onContinue, dashboardPath, isSpaced }) {
+  const minutes = Math.floor(elapsed / 60);
+  const seconds = elapsed % 60;
+  const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+  return (
+    <div className="card results-card fade-in">
+      <div className="results-ornament">
+        {isSpaced ? '— Review Complete —' : '— Pass Complete —'}
+      </div>
+
+      <div style={{
+        fontFamily: 'var(--font-display)',
+        fontSize: '4rem',
+        fontWeight: 900,
+        color: 'var(--accent)',
+        lineHeight: 1,
+        margin: '16px 0 10px',
+      }}>
+        {total}
+      </div>
+
+      <p className="results-remark">
+        {total === 1 ? 'card reviewed' : 'cards reviewed'}
+      </p>
+      <p className="results-sub" style={{ marginBottom: '32px' }}>
+        Session time: {timeStr}
+      </p>
+
+      <div className="results-actions">
+        {!isSpaced && (
+          <button onClick={onContinue}>Another Pass →</button>
+        )}
+        <Link to={dashboardPath}>
+          <button className={isSpaced ? '' : 'btn-ghost'}>Dashboard</button>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+// ── Main ──────────────────────────────────────────────────────────
 export default function StudyDeck() {
   const { subjectId, mode } = useParams();
-  const [searchParams] = useSearchParams();
-  const limitParam = searchParams.get('limit'); 
-  const timeParam = searchParams.get('time'); 
-  
-  const [questions, setQuestions] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [loading, setLoading] = useState(true);
-  
-  const [score, setScore] = useState(0);
-  const [isFinished, setIsFinished] = useState(false);
-  
-  const [timeLeft, setTimeLeft] = useState(timeParam ? Number(timeParam) * 60 : null);
-  const [missedQuestions, setMissedQuestions] = useState([]);
-  const [showAnswers, setShowAnswers] = useState(false); // <-- Toggle for answers
+  const [searchParams]       = useSearchParams();
+  const limitParam           = searchParams.get('limit');
+  const timeParam            = searchParams.get('time');
 
+  const isSpaced = mode === 'spaced';
+
+  const [questions, setQuestions]             = useState([]);
+  const [currentIndex, setCurrentIndex]       = useState(0);
+  const [loading, setLoading]                 = useState(true);
+  const [dueCount, setDueCount]               = useState(0);
+
+  // Quiz state
+  const [score, setScore]                     = useState(0);
+  const [isFinished, setIsFinished]           = useState(false);
+  const [timeLeft, setTimeLeft]               = useState(
+    timeParam ? Number(timeParam) * 60 : null
+  );
+  const [missedQuestions, setMissedQuestions] = useState([]);
+  const [showAnswers, setShowAnswers]         = useState(false);
+
+  // Flashcard session summary
+  const [showSummary, setShowSummary]         = useState(false);
+  const [sessionTotal, setSessionTotal]       = useState(0);
+  const sessionStartRef                       = useRef(Date.now());
+
+  // ── Fetch ─────────────────────────────────────────────────────────
   useEffect(() => {
     const fetchQuestions = async () => {
-      const querySnapshot = await getDocs(collection(db, "subjects", subjectId, "questions"));
-      let data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const snap = await getDocs(
+        collection(db, 'subjects', subjectId, 'questions')
+      );
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      if (mode === 'flashcards') data = data.filter(q => q.type === 'flashcard');
-      if (mode === 'mcq' || mode === 'quiz') data = data.filter(q => q.type === 'mcq');
-
-      for (let i = data.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [data[i], data[j]] = [data[j], data[i]];
+      if (mode === 'flashcards' || isSpaced) {
+        data = data.filter((q) => q.type === 'flashcard');
+      }
+      if (mode === 'mcq' || mode === 'quiz') {
+        data = data.filter((q) => q.type === 'mcq');
       }
 
-      if (mode === 'quiz' && limitParam) {
-        data = data.slice(0, Number(limitParam));
+      if (isSpaced) {
+        // Only show cards due today or overdue, sorted by urgency
+        const due = sortByDue(data.filter(isDue));
+        setDueCount(due.length);
+        setQuestions(due);
+      } else {
+        // Fisher-Yates shuffle for free-form modes
+        for (let i = data.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [data[i], data[j]] = [data[j], data[i]];
+        }
+        if (mode === 'quiz' && limitParam) data = data.slice(0, Number(limitParam));
+        setQuestions(data);
       }
 
-      setQuestions(data);
       setLoading(false);
+      sessionStartRef.current = Date.now();
+
+      updateDoc(doc(db, 'subjects', subjectId), {
+        lastStudied: serverTimestamp(),
+      }).catch(() => {});
     };
     fetchQuestions();
   }, [subjectId, mode, limitParam]);
 
+  // ── Timer ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (timeLeft === null || isFinished) return;
-    if (timeLeft <= 0) {
-      setIsFinished(true); 
-      return;
-    }
-    const timerId = setInterval(() => setTimeLeft(t => t - 1), 1000);
-    return () => clearInterval(timerId);
+    if (timeLeft <= 0) { setIsFinished(true); return; }
+    const id = setInterval(() => setTimeLeft((t) => t - 1), 1000);
+    return () => clearInterval(id);
   }, [timeLeft, isFinished]);
 
-  const formatTime = (seconds) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
+  // ── Keyboard nav ──────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (showSummary) return;
+      if (e.code === 'ArrowRight') handleNext();
+      if (e.code === 'ArrowLeft')  handlePrevious();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [currentIndex, questions, showSummary]);
+
+  const formatTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
   const handleDelete = async () => {
-    if (window.confirm("Are you sure you want to permanently delete this item?")) {
-      const itemToDelete = questions[currentIndex];
-      await deleteDoc(doc(db, "subjects", subjectId, "questions", itemToDelete.id));
-      
-      const updatedQuestions = questions.filter(q => q.id !== itemToDelete.id);
-      setQuestions(updatedQuestions);
-      
-      if (updatedQuestions.length === 0) setIsFinished(true);
-      else if (currentIndex >= updatedQuestions.length) setCurrentIndex(updatedQuestions.length - 1);
-    }
+    if (!window.confirm('Permanently delete this item?')) return;
+    const item    = questions[currentIndex];
+    await deleteDoc(doc(db, 'subjects', subjectId, 'questions', item.id));
+    const updated = questions.filter((q) => q.id !== item.id);
+    setQuestions(updated);
+    if (updated.length === 0) setIsFinished(true);
+    else if (currentIndex >= updated.length) setCurrentIndex(updated.length - 1);
   };
 
   const handlePrevious = () => {
-    if (currentIndex > 0) setCurrentIndex(currentIndex - 1);
+    if (currentIndex > 0) setCurrentIndex((i) => i - 1);
   };
 
-  const handleNext = async (isCorrect = false) => {
-    const currentItem = questions[currentIndex];
+  // ── SR rating handler ─────────────────────────────────────────────
+  const handleRate = async (rating) => {
+    const card    = questions[currentIndex];
+    const srFields = calculateNextReview(card, rating);
 
-    // Only track missed questions locally during the quiz
-    if (!isCorrect && mode === 'quiz') { 
-      setMissedQuestions(prev => [...prev, currentItem]);
+    // Write SR fields back to Firestore (non-blocking)
+    updateDoc(
+      doc(db, 'subjects', subjectId, 'questions', card.id),
+      srFields
+    ).catch(() => {});
+
+    // Advance
+    advanceCard();
+  };
+
+  const advanceCard = () => {
+    const isLast = currentIndex === questions.length - 1;
+    if (!isLast) {
+      setCurrentIndex((i) => i + 1);
+      return;
+    }
+    // End of deck
+    setSessionTotal(questions.length);
+    setShowSummary(true);
+  };
+
+  const handleNext = (isCorrect = false) => {
+    if (!isCorrect && mode === 'quiz') {
+      setMissedQuestions((prev) => [...prev, questions[currentIndex]]);
+    }
+    if (mode === 'quiz' && isCorrect) setScore((s) => s + 1);
+
+    const isLast = currentIndex === questions.length - 1;
+
+    if (!isLast) {
+      setCurrentIndex((i) => i + 1);
+      return;
     }
 
-    if (mode === 'quiz' && isCorrect) setScore(score + 1);
-
-    if (currentIndex < questions.length - 1) {
-      setCurrentIndex(currentIndex + 1);
+    if (mode === 'quiz') {
+      setIsFinished(true);
+    } else if (mode === 'flashcards') {
+      setSessionTotal(questions.length);
+      setShowSummary(true);
     } else {
-      if (mode === 'quiz') setIsFinished(true); 
-      else {
-        setCurrentIndex(0);
-        setQuestions([...questions].sort(() => Math.random() - 0.5));
-      }
+      // MCQ practice loops
+      setCurrentIndex(0);
+      setQuestions((q) => [...q].sort(() => Math.random() - 0.5));
     }
+  };
+
+  const handleContinueFlashcards = () => {
+    setQuestions((q) => [...q].sort(() => Math.random() - 0.5));
+    setCurrentIndex(0);
+    setShowSummary(false);
+    sessionStartRef.current = Date.now();
   };
 
   const handleRetakeMissed = () => {
     setQuestions(missedQuestions);
     setMissedQuestions([]);
-    setShowAnswers(false); // reset toggle
+    setShowAnswers(false);
     setCurrentIndex(0);
     setScore(0);
     setIsFinished(false);
-    setTimeLeft(null); 
+    setTimeLeft(null);
   };
 
-  if (loading) return <div style={{ textAlign: 'center', marginTop: '50px' }}>Loading...</div>;
-  if (questions.length === 0) return <div style={{ textAlign: 'center', marginTop: '50px' }}>No {mode} found for this subject.</div>;
-
-  if (isFinished && mode === 'quiz') {
-    const percentage = Math.round((score / questions.length) * 100);
+  // ── Guards ────────────────────────────────────────────────────────
+  if (loading) {
     return (
-      <div className="card" style={{ textAlign: 'center', marginTop: '40px' }}>
-        <h2>Examination Complete</h2>
-        <div style={{ fontSize: '4rem', fontWeight: 'bold', color: percentage >= 70 ? 'var(--correct)' : 'var(--incorrect)', margin: '20px 0' }}>
-          {percentage}%
+      <div className="empty-state">
+        <span className="empty-state-glyph">⧗</span>
+        <p className="empty-state-quote">Preparing your session…</p>
+      </div>
+    );
+  }
+
+  // Spaced mode with nothing due
+  if (isSpaced && questions.length === 0) {
+    return (
+      <div className="empty-state fade-in">
+        <span className="empty-state-glyph">✦</span>
+        <p className="empty-state-quote">
+          Nothing due for review. Come back later.
+        </p>
+        <p className="empty-state-attr" style={{ marginTop: '8px' }}>
+          All cards are scheduled for a future date.
+        </p>
+        <div style={{ marginTop: '28px' }}>
+          <Link to={`/subject/${subjectId}`}>
+            <button className="btn-ghost">Dashboard</button>
+          </Link>
         </div>
-        <p style={{ fontSize: '1.1rem' }}>You scored {score} out of {questions.length}.</p>
-        {timeLeft <= 0 && <p style={{ color: 'var(--incorrect)', fontWeight: 'bold' }}>Time Expired!</p>}
-        
-        <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginTop: '30px', flexWrap: 'wrap' }}>
+      </div>
+    );
+  }
+
+  if (questions.length === 0) {
+    return (
+      <div className="empty-state fade-in">
+        <span className="empty-state-glyph">∅</span>
+        <p className="empty-state-quote">No {mode} items found for this subject.</p>
+        <div style={{ marginTop: '24px' }}>
+          <Link to={`/subject/${subjectId}`}>
+            <button className="btn-ghost">Return to Dashboard</button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Session summary ───────────────────────────────────────────────
+  if (showSummary) {
+    const elapsed = Math.round((Date.now() - sessionStartRef.current) / 1000);
+    return (
+      <FlashcardSummary
+        total={sessionTotal}
+        elapsed={elapsed}
+        onContinue={handleContinueFlashcards}
+        dashboardPath={`/subject/${subjectId}`}
+        isSpaced={isSpaced}
+      />
+    );
+  }
+
+  // ── Quiz results ──────────────────────────────────────────────────
+  if (isFinished && mode === 'quiz') {
+    const pct    = Math.round((score / questions.length) * 100);
+    const passed = pct >= 60;
+
+    return (
+      <div className="card results-card fade-in">
+        <div className="results-ornament">— Examination Complete —</div>
+        <div className={`results-grade ${passed ? 'pass' : 'fail'}`}>{pct}%</div>
+        <p className="results-remark">{getRemark(pct)}</p>
+        <p className="results-sub">
+          {score} correct out of {questions.length} questions
+          {timeLeft !== null && timeLeft <= 0 && (
+            <span style={{ color: '#9f5a5a' }}> · Time expired</span>
+          )}
+        </p>
+
+        <div className="results-actions">
           {missedQuestions.length > 0 && (
-            <button onClick={handleRetakeMissed} style={{ backgroundColor: 'var(--primary)', color: '#e8e4c9', border: '1px solid var(--accent)' }}>
+            <button onClick={handleRetakeMissed}>
               Retake Missed ({missedQuestions.length})
             </button>
           )}
-          <button onClick={() => window.location.reload()} style={{ backgroundColor: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}>Retake Full Exam</button>
-          <Link to={`/subject/${subjectId}`}><button style={{ backgroundColor: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}>Dashboard</button></Link>
+          <button className="btn-ghost" onClick={() => window.location.reload()}>
+            Retake Full Exam
+          </button>
+          <Link to={`/subject/${subjectId}`}>
+            <button className="btn-ghost">Dashboard</button>
+          </Link>
         </div>
 
         {missedQuestions.length > 0 && (
-          <div style={{ marginTop: '40px', textAlign: 'left', borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
-            
-            {/* Missed Questions Header & Reveal Button */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <h3 style={{ color: 'var(--incorrect)', margin: 0 }}>Missed Questions</h3>
-              <button 
-                onClick={() => setShowAnswers(!showAnswers)}
-                style={{ padding: '6px 12px', fontSize: '0.85rem', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
+          <div style={{ marginTop: '8px', textAlign: 'left' }}>
+            <div className="missed-header">
+              <h3>Missed Questions</h3>
+              <button
+                className="btn-ghost"
+                onClick={() => setShowAnswers((v) => !v)}
+                style={{ padding: '5px 12px', fontSize: '0.78rem' }}
               >
-                {showAnswers ? 'Hide Answers' : 'Reveal Answers 👁️'}
+                {showAnswers ? 'Hide Answers' : 'Reveal Answers'}
               </button>
             </div>
-
-            <div style={{ maxHeight: '350px', overflowY: 'auto', paddingRight: '10px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            <div className="missed-list">
               {missedQuestions.map((q, idx) => (
-                <div key={idx} style={{ backgroundColor: 'var(--bg)', padding: '15px', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-                  <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: 'var(--text)' }}>{q.question}</p>
-                  
-                  {/* Conditional Rendering of the Answer */}
-                  {showAnswers ? (
-                    <p style={{ margin: 0, color: 'var(--correct)', fontSize: '0.95rem' }}>✓ {q.correctAnswer}</p>
-                  ) : (
-                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.95rem', fontStyle: 'italic' }}>Answer hidden...</p>
-                  )}
-
+                <div key={idx} className="missed-item">
+                  <div className="missed-item-q">{q.question}</div>
+                  {showAnswers
+                    ? <div className="missed-item-a">✓ {q.correctAnswer}</div>
+                    : <div className="missed-item-hidden">Answer concealed…</div>
+                  }
                 </div>
               ))}
             </div>
@@ -168,73 +352,104 @@ export default function StudyDeck() {
     );
   }
 
+  // ── Active study ──────────────────────────────────────────────────
   const currentItem = questions[currentIndex];
+  const progress    = ((currentIndex + 1) / questions.length) * 100;
 
   return (
-    <div style={{ maxWidth: '500px', margin: '20px auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <h3 style={{ margin: 0 }}>Item {currentIndex + 1} of {questions.length}</h3>
-        
-        <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+    <div style={{ maxWidth: '520px', margin: '0 auto' }} className="fade-in">
+
+      {/* Progress bar */}
+      <div className="progress-container">
+        <div className="progress-row">
+          <span className="progress-label">
+            {isSpaced          ? `Spaced review · ${dueCount} due`
+            : mode === 'quiz'  ? 'Examination in progress'
+            : mode === 'flashcards' ? 'Reviewing flashcards'
+            :                   'Practising MCQs'}
+          </span>
+          <span className="progress-fraction">
+            {currentIndex + 1} / {questions.length}
+          </span>
+        </div>
+        <div className="progress-track">
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+
+      {/* Top controls */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '20px',
+      }}>
+        <Link to={`/subject/${subjectId}`}>
+          <button className="btn-ghost" style={{ padding: '6px 12px', fontSize: '0.78rem' }}>
+            ← Back
+          </button>
+        </Link>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           {mode === 'quiz' && timeLeft !== null && (
-            <span style={{ fontWeight: 'bold', color: timeLeft < 60 ? 'var(--incorrect)' : 'var(--accent)', fontFamily: 'monospace', fontSize: '1.2rem' }}>
-              ⏳ {formatTime(timeLeft)}
+            <span className={`timer${timeLeft < 60 ? ' urgent' : ''}`}>
+              {formatTime(timeLeft)}
             </span>
           )}
-          
-          {mode !== 'quiz' && (
-            <button onClick={handleDelete} title="Delete Item" style={{ padding: '6px 10px', backgroundColor: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-              🗑️
+          {mode !== 'quiz' && !isSpaced && (
+            <button
+              className="btn-ghost"
+              onClick={handleDelete}
+              title="Delete this item"
+              style={{ padding: '6px 10px', fontSize: '0.85rem' }}
+            >
+              ✕
             </button>
           )}
         </div>
       </div>
-      
+
+      {/* Card */}
       {currentItem.type === 'mcq' ? (
+        <MultipleChoice
+          key={currentItem.id}
+          question={currentItem.question}
+          options={currentItem.options}
+          correctAnswer={currentItem.correctAnswer}
+          onNext={handleNext}
+        />
+      ) : (
         <>
-          <MultipleChoice 
+          <Flashcard
             key={currentItem.id}
-            question={currentItem.question} 
-            options={currentItem.options} 
-            correctAnswer={currentItem.correctAnswer}
-            onNext={handleNext} 
+            front={currentItem.front}
+            back={currentItem.back}
+            spacedMode={isSpaced}
+            onRate={isSpaced ? handleRate : undefined}
           />
-          {mode !== 'quiz' && currentIndex > 0 && (
-            <div style={{ textAlign: 'center', marginTop: '15px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              Press <strong>← Left Arrow</strong> to revisit the previous question
+
+          {/* Nav buttons — hidden in spaced mode (rating buttons handle advance) */}
+          {!isSpaced && (
+            <div className="flashcard-nav">
+              {mode !== 'quiz' && (
+                <button
+                  className="btn-ghost"
+                  onClick={handlePrevious}
+                  disabled={currentIndex === 0}
+                  style={{ fontSize: '0.85rem' }}
+                >
+                  ← Previous
+                </button>
+              )}
+              <button onClick={() => handleNext()} style={{ flex: 1 }}>
+                {currentIndex === questions.length - 1
+                  ? 'Finish Pass →'
+                  : 'Next →'}
+              </button>
             </div>
           )}
         </>
-      ) : (
-        <div style={{ textAlign: 'center' }}>
-          <Flashcard key={currentItem.id} front={currentItem.front} back={currentItem.back} />
-          
-          <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
-            {mode !== 'quiz' && (
-              <button 
-                onClick={handlePrevious} 
-                disabled={currentIndex === 0}
-                style={{ 
-                  flex: 1, 
-                  backgroundColor: 'var(--surface)', 
-                  border: '1px solid var(--border)', 
-                  color: currentIndex === 0 ? 'var(--border)' : 'var(--text)',
-                  cursor: currentIndex === 0 ? 'not-allowed' : 'pointer'
-                }}
-              >
-                <div style={{ fontSize: '0.75rem', opacity: 0.7, marginBottom: '4px' }}>(← Left Arrow)</div>
-                Previous
-              </button>
-            )}
-            
-            <button onClick={() => handleNext()} style={{ flex: mode !== 'quiz' ? 1 : '100%' }}>
-              <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '4px', color: '#e8e4c9' }}>(Right Arrow →)</div>
-              Next Card
-            </button>
-          </div>
-
-        </div>
       )}
+
     </div>
   );
 }
