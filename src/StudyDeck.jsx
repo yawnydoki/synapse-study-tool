@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { db } from './firebase';
 import {
   collection, getDocs, doc,
@@ -21,11 +21,61 @@ function getRemark(pct) {
   return REMARKS.find((r) => pct >= r.floor)?.text ?? REMARKS[REMARKS.length - 1].text;
 }
 
+// ── Keyboard legend ───────────────────────────────────────────────
+function KeyLegend({ items }) {
+  return (
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      flexWrap: 'wrap',
+      gap: '14px',
+      marginTop: '20px',
+    }}>
+      {items.map(({ key, label }) => (
+        <span key={key} style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          fontSize: '0.72rem',
+          color: 'var(--text-faint)',
+          fontFamily: 'var(--font-body)',
+        }}>
+          <kbd style={{
+            fontFamily: 'inherit',
+            fontSize: '0.7rem',
+            padding: '2px 6px',
+            border: '1px solid var(--border-light)',
+            borderRadius: '3px',
+            background: 'var(--bg-deep)',
+            color: 'var(--text-muted)',
+            lineHeight: 1.4,
+          }}>
+            {key}
+          </kbd>
+          <span style={{ fontStyle: 'italic' }}>{label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // ── Flashcard session summary ─────────────────────────────────────
 function FlashcardSummary({ total, elapsed, onContinue, dashboardPath, isSpaced }) {
   const minutes = Math.floor(elapsed / 60);
   const seconds = elapsed % 60;
   const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+  // Any key to go to dashboard (spaced) or continue (free-form)
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.code === 'Space' || e.code === 'Enter') {
+        e.preventDefault();
+        if (!isSpaced) onContinue();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isSpaced, onContinue]);
 
   return (
     <div className="card results-card fade-in">
@@ -59,6 +109,10 @@ function FlashcardSummary({ total, elapsed, onContinue, dashboardPath, isSpaced 
           <button className={isSpaced ? '' : 'btn-ghost'}>Dashboard</button>
         </Link>
       </div>
+
+      {!isSpaced && (
+        <KeyLegend items={[{ key: 'Space / Enter', label: 'another pass' }]} />
+      )}
     </div>
   );
 }
@@ -75,7 +129,6 @@ export default function StudyDeck() {
   const [questions, setQuestions]             = useState([]);
   const [currentIndex, setCurrentIndex]       = useState(0);
   const [loading, setLoading]                 = useState(true);
-  const [dueCount, setDueCount]               = useState(0);
 
   // Quiz state
   const [score, setScore]                     = useState(0);
@@ -107,12 +160,9 @@ export default function StudyDeck() {
       }
 
       if (isSpaced) {
-        // Only show cards due today or overdue, sorted by urgency
         const due = sortByDue(data.filter(isDue));
-        setDueCount(due.length);
         setQuestions(due);
       } else {
-        // Fisher-Yates shuffle for free-form modes
         for (let i = data.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [data[i], data[j]] = [data[j], data[i]];
@@ -139,60 +189,14 @@ export default function StudyDeck() {
     return () => clearInterval(id);
   }, [timeLeft, isFinished]);
 
-  // ── Keyboard nav ──────────────────────────────────────────────────
-  useEffect(() => {
-    const handler = (e) => {
-      if (showSummary) return;
-      if (e.code === 'ArrowRight') handleNext();
-      if (e.code === 'ArrowLeft')  handlePrevious();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [currentIndex, questions, showSummary]);
-
   const formatTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
-  const handleDelete = async () => {
-    if (!window.confirm('Permanently delete this item?')) return;
-    const item    = questions[currentIndex];
-    await deleteDoc(doc(db, 'subjects', subjectId, 'questions', item.id));
-    const updated = questions.filter((q) => q.id !== item.id);
-    setQuestions(updated);
-    if (updated.length === 0) setIsFinished(true);
-    else if (currentIndex >= updated.length) setCurrentIndex(updated.length - 1);
-  };
-
-  const handlePrevious = () => {
+  // ── Handlers (useCallback so keyboard effect sees fresh values) ───
+  const handlePrevious = useCallback(() => {
     if (currentIndex > 0) setCurrentIndex((i) => i - 1);
-  };
+  }, [currentIndex]);
 
-  // ── SR rating handler ─────────────────────────────────────────────
-  const handleRate = async (rating) => {
-    const card    = questions[currentIndex];
-    const srFields = calculateNextReview(card, rating);
-
-    // Write SR fields back to Firestore (non-blocking)
-    updateDoc(
-      doc(db, 'subjects', subjectId, 'questions', card.id),
-      srFields
-    ).catch(() => {});
-
-    // Advance
-    advanceCard();
-  };
-
-  const advanceCard = () => {
-    const isLast = currentIndex === questions.length - 1;
-    if (!isLast) {
-      setCurrentIndex((i) => i + 1);
-      return;
-    }
-    // End of deck
-    setSessionTotal(questions.length);
-    setShowSummary(true);
-  };
-
-  const handleNext = (isCorrect = false) => {
+  const handleNext = useCallback((isCorrect = false) => {
     if (!isCorrect && mode === 'quiz') {
       setMissedQuestions((prev) => [...prev, questions[currentIndex]]);
     }
@@ -211,18 +215,44 @@ export default function StudyDeck() {
       setSessionTotal(questions.length);
       setShowSummary(true);
     } else {
-      // MCQ practice loops
       setCurrentIndex(0);
       setQuestions((q) => [...q].sort(() => Math.random() - 0.5));
     }
+  }, [currentIndex, questions, mode]);
+
+  const handleRate = useCallback(async (rating) => {
+    const card     = questions[currentIndex];
+    const srFields = calculateNextReview(card, rating);
+    updateDoc(
+      doc(db, 'subjects', subjectId, 'questions', card.id),
+      srFields
+    ).catch(() => {});
+
+    const isLast = currentIndex === questions.length - 1;
+    if (!isLast) {
+      setCurrentIndex((i) => i + 1);
+    } else {
+      setSessionTotal(questions.length);
+      setShowSummary(true);
+    }
+  }, [currentIndex, questions, subjectId]);
+
+  const handleDelete = async () => {
+    if (!window.confirm('Permanently delete this item?')) return;
+    const item    = questions[currentIndex];
+    await deleteDoc(doc(db, 'subjects', subjectId, 'questions', item.id));
+    const updated = questions.filter((q) => q.id !== item.id);
+    setQuestions(updated);
+    if (updated.length === 0) setIsFinished(true);
+    else if (currentIndex >= updated.length) setCurrentIndex(updated.length - 1);
   };
 
-  const handleContinueFlashcards = () => {
+  const handleContinueFlashcards = useCallback(() => {
     setQuestions((q) => [...q].sort(() => Math.random() - 0.5));
     setCurrentIndex(0);
     setShowSummary(false);
     sessionStartRef.current = Date.now();
-  };
+  }, []);
 
   const handleRetakeMissed = () => {
     setQuestions(missedQuestions);
@@ -234,6 +264,63 @@ export default function StudyDeck() {
     setTimeLeft(null);
   };
 
+  // ── Keyboard handler ──────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (showSummary || isFinished || loading) return;
+
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      const item = questions[currentIndex];
+      const isFlashcard = item?.type === 'flashcard';
+      const isMCQ       = item?.type === 'mcq';
+
+      switch (e.code) {
+        // ── Navigation ──
+        case 'ArrowRight':
+        case 'Enter':
+          // Enter advances flashcards (not spaced — rating buttons handle that)
+          if (!isSpaced && isFlashcard) { e.preventDefault(); handleNext(); }
+          break;
+
+        case 'ArrowLeft':
+        case 'Backspace':
+          if (!isSpaced && isFlashcard && !isMCQ) {
+            e.preventDefault();
+            handlePrevious();
+          }
+          break;
+
+        // ── MCQ options 1-4 already handled in MultipleChoice.jsx ──
+        // ── SR ratings 1-3 already handled in Flashcard.jsx ──
+
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [
+    currentIndex, questions, mode, isSpaced,
+    showSummary, isFinished, loading,
+    handleNext, handlePrevious,
+  ]);
+
+  // ── Quiz results keyboard ─────────────────────────────────────────
+  useEffect(() => {
+    if (!isFinished || mode !== 'quiz') return;
+    const handler = (e) => {
+      if (e.code === 'Enter' || e.code === 'Space') {
+        e.preventDefault();
+        window.location.reload();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isFinished, mode]);
+
   // ── Guards ────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -244,14 +331,11 @@ export default function StudyDeck() {
     );
   }
 
-  // Spaced mode with nothing due
   if (isSpaced && questions.length === 0) {
     return (
       <div className="empty-state fade-in">
         <span className="empty-state-glyph">✦</span>
-        <p className="empty-state-quote">
-          Nothing due for review. Come back later.
-        </p>
+        <p className="empty-state-quote">Nothing due for review. Come back later.</p>
         <p className="empty-state-attr" style={{ marginTop: '8px' }}>
           All cards are scheduled for a future date.
         </p>
@@ -323,6 +407,8 @@ export default function StudyDeck() {
           </Link>
         </div>
 
+        <KeyLegend items={[{ key: 'Space / Enter', label: 'retake full exam' }]} />
+
         {missedQuestions.length > 0 && (
           <div style={{ marginTop: '8px', textAlign: 'left' }}>
             <div className="missed-header">
@@ -355,6 +441,25 @@ export default function StudyDeck() {
   // ── Active study ──────────────────────────────────────────────────
   const currentItem = questions[currentIndex];
   const progress    = ((currentIndex + 1) / questions.length) * 100;
+  const isFlashcard = currentItem?.type === 'flashcard';
+
+  // Legend items change based on mode and card type
+  const legendItems = isSpaced
+    ? [
+        { key: 'Space',   label: 'flip'  },
+        { key: '1',       label: 'again' },
+        { key: '2',       label: 'good'  },
+        { key: '3',       label: 'easy'  },
+      ]
+    : isFlashcard
+    ? [
+        { key: 'Space',             label: 'flip'     },
+        { key: '→ / Enter',         label: 'next'     },
+        { key: '← / Backspace',     label: 'previous' },
+      ]
+    : [
+        { key: '1 – 4', label: 'select option' },
+      ];
 
   return (
     <div style={{ maxWidth: '520px', margin: '0 auto' }} className="fade-in">
@@ -363,10 +468,10 @@ export default function StudyDeck() {
       <div className="progress-container">
         <div className="progress-row">
           <span className="progress-label">
-            {isSpaced          ? `Spaced review · ${dueCount} due`
-            : mode === 'quiz'  ? 'Examination in progress'
+            {isSpaced            ? 'Spaced review'
+            : mode === 'quiz'    ? 'Examination in progress'
             : mode === 'flashcards' ? 'Reviewing flashcards'
-            :                   'Practising MCQs'}
+            :                     'Practising MCQs'}
           </span>
           <span className="progress-fraction">
             {currentIndex + 1} / {questions.length}
@@ -427,7 +532,6 @@ export default function StudyDeck() {
             onRate={isSpaced ? handleRate : undefined}
           />
 
-          {/* Nav buttons — hidden in spaced mode (rating buttons handle advance) */}
           {!isSpaced && (
             <div className="flashcard-nav">
               {mode !== 'quiz' && (
@@ -449,6 +553,9 @@ export default function StudyDeck() {
           )}
         </>
       )}
+
+      {/* Keyboard legend */}
+      <KeyLegend items={legendItems} />
 
     </div>
   );
