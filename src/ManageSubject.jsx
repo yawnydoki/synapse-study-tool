@@ -1,15 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { collection, getDocs, doc, deleteDoc, updateDoc } from 'firebase/firestore';
-import { useParams, Link } from 'react-router-dom';
+import {
+  collection, getDocs, doc,
+  deleteDoc, updateDoc, writeBatch,
+} from 'firebase/firestore';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 
 export default function ManageSubject() {
-  const { subjectId } = useParams();
-  const [questions, setQuestions]   = useState([]);
-  const [loading, setLoading]       = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [editingId, setEditingId]   = useState(null);
-  const [editForm, setEditForm]     = useState({});
+  const { subjectId }                         = useParams();
+  const navigate                              = useNavigate();
+  const [questions, setQuestions]             = useState([]);
+  const [loading, setLoading]                 = useState(true);
+  const [searchTerm, setSearchTerm]           = useState('');
+  const [editingId, setEditingId]             = useState(null);
+  const [editForm, setEditForm]               = useState({});
+  const [dangerOpen, setDangerOpen]           = useState(false);
+  const [deleting, setDeleting]               = useState(false);
 
   useEffect(() => {
     const fetchQuestions = async () => {
@@ -22,6 +28,7 @@ export default function ManageSubject() {
     fetchQuestions();
   }, [subjectId]);
 
+  // ── Individual item handlers ──────────────────────────────────────
   const handleDelete = async (id) => {
     if (!window.confirm('Permanently delete this item?')) return;
     await deleteDoc(doc(db, 'subjects', subjectId, 'questions', id));
@@ -30,10 +37,7 @@ export default function ManageSubject() {
 
   const startEditing = (item) => {
     setEditingId(item.id);
-    setEditForm({
-      ...item,
-      options: item.options ? [...item.options] : [],
-    });
+    setEditForm({ ...item, options: item.options ? [...item.options] : [] });
   };
 
   const handleSave = async (id) => {
@@ -60,6 +64,54 @@ export default function ManageSubject() {
     setEditForm({ ...editForm, options: updated });
   };
 
+  // ── Bulk delete helpers ───────────────────────────────────────────
+  const batchDelete = async (predicate = null) => {
+    const snap     = await getDocs(collection(db, 'subjects', subjectId, 'questions'));
+    const toDelete = predicate ? snap.docs.filter((d) => predicate(d.data())) : snap.docs;
+    for (let i = 0; i < toDelete.length; i += 500) {
+      const batch = writeBatch(db);
+      toDelete.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+    return toDelete.length;
+  };
+
+  const handleDeleteType = async (type) => {
+    const count = questions.filter((q) => q.type === type).length;
+    const label = type === 'flashcard' ? 'flashcards' : 'MCQs';
+    if (!window.confirm(`Delete all ${count} ${label}? This cannot be undone.`)) return;
+    setDeleting(true);
+    await batchDelete((data) => data.type === type);
+    setQuestions((prev) => prev.filter((q) => q.type !== type));
+    setDeleting(false);
+  };
+
+  const handleDeleteByTag = async (tag) => {
+    const count = questions.filter((q) => q.tag === tag).length;
+    if (!window.confirm(`Delete all ${count} items tagged "${tag}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    await batchDelete((data) => data.tag === tag);
+    setQuestions((prev) => prev.filter((q) => q.tag !== tag));
+    setDeleting(false);
+  };
+
+  const handleDeleteAll = async () => {
+    if (!window.confirm(`Delete all ${questions.length} items? This cannot be undone.`)) return;
+    setDeleting(true);
+    await batchDelete();
+    setQuestions([]);
+    setDeleting(false);
+  };
+
+  const handleDeleteSubject = async () => {
+    if (!window.confirm(`Permanently delete this entire subject and all its items? This cannot be undone.`)) return;
+    setDeleting(true);
+    await batchDelete();
+    await deleteDoc(doc(db, 'subjects', subjectId));
+    navigate('/');
+  };
+
+  // ── Derived ───────────────────────────────────────────────────────
   const filtered = questions.filter((q) => {
     const t = searchTerm.toLowerCase();
     return (
@@ -68,6 +120,12 @@ export default function ManageSubject() {
       q.question?.toLowerCase().includes(t)
     );
   });
+
+  const flashcardCount = questions.filter((q) => q.type === 'flashcard').length;
+  const mcqCount       = questions.filter((q) => q.type === 'mcq').length;
+  const tags           = [...new Set(questions.map((q) => q.tag).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+  );
 
   if (loading) {
     return (
@@ -81,22 +139,155 @@ export default function ManageSubject() {
   return (
     <div style={{ maxWidth: '700px', margin: '0 auto' }} className="fade-in">
 
+      {/* ── Header ── */}
       <div style={{
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
         marginBottom: '28px',
+        gap: '10px',
       }}>
         <h2 style={{ margin: 0 }}>
           Manage <span style={{ color: 'var(--accent)' }}>{subjectId}</span>
         </h2>
-        <Link to={`/subject/${subjectId}`}>
-          <button className="btn-ghost" style={{ padding: '7px 14px', fontSize: '0.82rem' }}>
-            Back
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={() => setDangerOpen((v) => !v)}
+            style={{
+              padding: '7px 14px',
+              fontSize: '0.82rem',
+              background: dangerOpen ? '#3a0f0f' : '#2a1515',
+              border: `1px solid ${dangerOpen ? '#a04040' : '#6e2a2a'}`,
+              color: '#c08080',
+            }}
+          >
+            Delete
           </button>
-        </Link>
+          <Link to={`/subject/${subjectId}`}>
+            <button className="btn-ghost" style={{ padding: '7px 14px', fontSize: '0.82rem' }}>
+              Back
+            </button>
+          </Link>
+        </div>
       </div>
 
+      {/* ── Danger zone panel ── */}
+      {dangerOpen && (
+        <div
+          className="fade-in"
+          style={{
+            marginBottom: '24px',
+            border: '1px solid #6e2a2a',
+            borderRadius: 'var(--radius)',
+            padding: '18px 20px',
+            background: '#1a1010',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+          }}
+        >
+          {/* Delete by type */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => handleDeleteType('flashcard')}
+              disabled={deleting || flashcardCount === 0}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                fontSize: '0.8rem',
+                background: '#2a1515',
+                border: '1px solid #6e2a2a',
+                color: flashcardCount === 0 ? 'var(--text-faint)' : '#c08080',
+              }}
+            >
+              Delete flashcards ({flashcardCount})
+            </button>
+            <button
+              onClick={() => handleDeleteType('mcq')}
+              disabled={deleting || mcqCount === 0}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                fontSize: '0.8rem',
+                background: '#2a1515',
+                border: '1px solid #6e2a2a',
+                color: mcqCount === 0 ? 'var(--text-faint)' : '#c08080',
+              }}
+            >
+              Delete MCQs ({mcqCount})
+            </button>
+          </div>
+
+          {/* Delete by tag */}
+          {tags.length > 0 && (
+            <div>
+              <div style={{
+                fontSize: '0.68rem',
+                fontWeight: 600,
+                letterSpacing: '1.5px',
+                textTransform: 'uppercase',
+                color: '#9f5a5a',
+                marginBottom: '8px',
+              }}>
+                Delete by tag
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+                {tags.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => handleDeleteByTag(t)}
+                    disabled={deleting}
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: '0.78rem',
+                      background: '#2a1515',
+                      border: '1px solid #6e2a2a',
+                      color: '#c08080',
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ borderTop: '1px solid #3a1a1a', margin: '2px 0' }} />
+
+          {/* Delete all items */}
+          <button
+            onClick={handleDeleteAll}
+            disabled={deleting || questions.length === 0}
+            style={{
+              padding: '8px 12px',
+              fontSize: '0.8rem',
+              background: '#2a1515',
+              border: '1px solid #8c3636',
+              color: questions.length === 0 ? 'var(--text-faint)' : '#d09090',
+            }}
+          >
+            Delete all {questions.length} items
+          </button>
+
+          {/* Delete subject */}
+          <button
+            onClick={handleDeleteSubject}
+            disabled={deleting}
+            style={{
+              padding: '8px 12px',
+              fontSize: '0.8rem',
+              background: '#3a0f0f',
+              border: '1px solid #a04040',
+              color: '#e09090',
+              fontWeight: 700,
+            }}
+          >
+            {deleting ? 'Deleting…' : 'Delete entire subject'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Search ── */}
       <div className="search-wrapper">
         <span className="search-icon" style={{ fontStyle: 'normal', fontSize: '0.9rem' }}>⌕</span>
         <input
@@ -107,14 +298,32 @@ export default function ManageSubject() {
         />
       </div>
 
+      {/* ── Item list ── */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {filtered.map((q) => (
           <div key={q.id} className="manage-item">
 
             <div className="manage-item-header">
-              <span className="manage-item-type">
-                {q.type === 'flashcard' ? 'Flashcard' : 'MCQ'}
-              </span>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <span className="manage-item-type">
+                  {q.type === 'flashcard' ? 'Flashcard' : 'MCQ'}
+                </span>
+                {q.tag && (
+                  <span style={{
+                    fontSize: '0.68rem',
+                    fontWeight: 600,
+                    letterSpacing: '1px',
+                    textTransform: 'uppercase',
+                    color: 'var(--accent-dim)',
+                    background: 'var(--bg-deep)',
+                    border: '1px solid var(--border)',
+                    padding: '2px 8px',
+                    borderRadius: '2px',
+                  }}>
+                    {q.tag}
+                  </span>
+                )}
+              </div>
               <div className="manage-item-actions">
                 {editingId === q.id ? (
                   <>
@@ -162,7 +371,6 @@ export default function ManageSubject() {
             {/* EDIT MODE */}
             {editingId === q.id ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-
                 {q.type === 'flashcard' ? (
                   <>
                     <div>
@@ -191,7 +399,6 @@ export default function ManageSubject() {
                         style={{ minHeight: '70px' }}
                       />
                     </div>
-
                     <div>
                       <label>Options</label>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '6px' }}>
@@ -213,17 +420,14 @@ export default function ManageSubject() {
                               onChange={(e) => handleOptionChange(i, e.target.value)}
                               style={{
                                 flex: 1,
-                                borderColor:
-                                  opt.trim() === editForm.correctAnswer?.trim()
-                                    ? 'var(--accent-dim)'
-                                    : undefined,
+                                borderColor: opt.trim() === editForm.correctAnswer?.trim()
+                                  ? 'var(--accent-dim)' : undefined,
                               }}
                             />
                           </div>
                         ))}
                       </div>
                     </div>
-
                     <div>
                       <label>Correct Answer</label>
                       <select
@@ -233,9 +437,7 @@ export default function ManageSubject() {
                       >
                         <option value="">— select the correct option —</option>
                         {(editForm.options || []).map((opt, i) => (
-                          <option key={i} value={opt}>
-                            {i + 1}. {opt}
-                          </option>
+                          <option key={i} value={opt}>{i + 1}. {opt}</option>
                         ))}
                       </select>
                       <p style={{
@@ -249,6 +451,15 @@ export default function ManageSubject() {
                     </div>
                   </>
                 )}
+                <div>
+                  <label>Tag</label>
+                  <input
+                    value={editForm.tag || ''}
+                    onChange={(e) => setEditForm({ ...editForm, tag: e.target.value })}
+                    placeholder="e.g. Module 1 (optional)"
+                    style={{ marginTop: '6px' }}
+                  />
+                </div>
               </div>
 
             ) : (
@@ -256,12 +467,7 @@ export default function ManageSubject() {
               <div>
                 {q.type === 'flashcard' ? (
                   <>
-                    <div style={{
-                      fontWeight: '600',
-                      fontSize: '1rem',
-                      marginBottom: '6px',
-                      color: 'var(--text)',
-                    }}>
+                    <div style={{ fontWeight: '600', fontSize: '1rem', marginBottom: '6px', color: 'var(--text)' }}>
                       {q.front}
                     </div>
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>
@@ -270,12 +476,7 @@ export default function ManageSubject() {
                   </>
                 ) : (
                   <>
-                    <div style={{
-                      fontWeight: '600',
-                      fontSize: '1rem',
-                      marginBottom: '10px',
-                      color: 'var(--text)',
-                    }}>
+                    <div style={{ fontWeight: '600', fontSize: '1rem', marginBottom: '10px', color: 'var(--text)' }}>
                       {q.question}
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -300,9 +501,7 @@ export default function ManageSubject() {
                               {i + 1}.
                             </span>
                             {opt}
-                            {isCorrect && (
-                              <span style={{ marginLeft: '2px', opacity: 0.8 }}>✓</span>
-                            )}
+                            {isCorrect && <span style={{ marginLeft: '2px', opacity: 0.8 }}>✓</span>}
                           </div>
                         );
                       })}

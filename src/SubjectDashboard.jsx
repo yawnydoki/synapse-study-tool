@@ -9,6 +9,8 @@ export default function SubjectDashboard() {
   const [totalCount, setTotalCount]         = useState(0);
   const [flashcardCount, setFlashcardCount] = useState(0);
   const [mcqCount, setMcqCount]             = useState(0);
+  const [tags, setTags]                     = useState([]);       // sorted unique tags
+  const [activeTag, setActiveTag]           = useState('');       // '' = All
   const [quizLimit, setQuizLimit]           = useState(10);
   const [timeLimit, setTimeLimit]           = useState(5);
   const [rawQuestions, setRawQuestions]     = useState([]);
@@ -22,20 +24,28 @@ export default function SubjectDashboard() {
         collection(db, 'subjects', subjectId, 'questions')
       );
 
-      let fCount = 0, mCount = 0, dCount = 0, allQ = [];
+      let fCount = 0, mCount = 0, allQ = [];
+      const tagSet = new Set();
 
       qSnap.docs.forEach((d) => {
         const data = d.data();
         if (data.type === 'flashcard') fCount++;
-        if (data.type === 'mcq') mCount++;
+        if (data.type === 'mcq')       mCount++;
+        if (data.tag)                  tagSet.add(data.tag);
         const { id: _id, ...clean } = data;
         allQ.push(clean);
       });
+
+      // Sort tags naturally so "Module 2" < "Module 10"
+      const sortedTags = [...tagSet].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+      );
 
       setRawQuestions(allQ);
       setTotalCount(qSnap.docs.length);
       setFlashcardCount(fCount);
       setMcqCount(mCount);
+      setTags(sortedTags);
       setQuizLimit(Math.min(mCount, 10));
     };
     fetchData();
@@ -51,6 +61,15 @@ export default function SubjectDashboard() {
     link.href     = url;
     link.download = `${subjectId}-synapse-export.json`;
     link.click();
+  };
+
+  // Build URL query string — appends tag param when a filter is active
+  const studyUrl = (mode, extra = '') => {
+    const params = new URLSearchParams();
+    if (activeTag) params.set('tag', activeTag);
+    if (extra)     extra.split('&').forEach((p) => { const [k,v] = p.split('='); params.set(k,v); });
+    const qs = params.toString();
+    return `/study/${subjectId}/${mode}${qs ? `?${qs}` : ''}`;
   };
 
   if (!subject) {
@@ -87,13 +106,12 @@ export default function SubjectDashboard() {
             <span className="stat-chip-value">{mcqCount}</span>
             <span className="stat-chip-label">MCQs</span>
           </div>
-
         </div>
 
         <div style={{
           display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '20px',
         }}>
-          <Link to={`/manage/${subject.id}`}>
+          <Link to={`/manage/${subjectId}`}>
             <button className="btn-accent" style={{ padding: '7px 16px', fontSize: '0.8rem' }}>
               Edit Items
             </button>
@@ -108,6 +126,71 @@ export default function SubjectDashboard() {
         </div>
       </div>
 
+      {/* ── Tag filter ── */}
+      {tags.length > 0 && (
+        <div style={{ marginBottom: '28px' }}>
+          <div style={{
+            fontSize: '0.72rem',
+            fontWeight: 600,
+            letterSpacing: '1.5px',
+            textTransform: 'uppercase',
+            color: 'var(--text-faint)',
+            marginBottom: '10px',
+          }}>
+            Filter by tag
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+
+            {/* All */}
+            <button
+              onClick={() => setActiveTag('')}
+              style={{
+                padding: '5px 14px',
+                fontSize: '0.78rem',
+                fontWeight: activeTag === '' ? 700 : 400,
+                background: activeTag === '' ? 'var(--primary)' : 'transparent',
+                border: `1px solid ${activeTag === '' ? 'var(--accent-dim)' : 'var(--border-light)'}`,
+                color: activeTag === '' ? '#e8e4c9' : 'var(--text-muted)',
+                borderRadius: '2px',
+                transition: 'all 0.15s',
+              }}
+            >
+              All
+            </button>
+
+            {tags.map((t) => (
+              <button
+                key={t}
+                onClick={() => setActiveTag(activeTag === t ? '' : t)}
+                style={{
+                  padding: '5px 14px',
+                  fontSize: '0.78rem',
+                  fontWeight: activeTag === t ? 700 : 400,
+                  background: activeTag === t ? 'var(--primary)' : 'transparent',
+                  border: `1px solid ${activeTag === t ? 'var(--accent-dim)' : 'var(--border-light)'}`,
+                  color: activeTag === t ? '#e8e4c9' : 'var(--text-muted)',
+                  borderRadius: '2px',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+
+          {activeTag && (
+            <p style={{
+              marginTop: '10px',
+              fontSize: '0.78rem',
+              color: 'var(--text-muted)',
+              fontStyle: 'italic',
+            }}>
+              Study modes below will only include items tagged "{activeTag}".
+            </p>
+          )}
+        </div>
+      )}
+
       {/* ── Study Modes ── */}
       <div className="section-heading" style={{ marginBottom: '14px' }}>
         <h3>Study Modes</h3>
@@ -116,10 +199,7 @@ export default function SubjectDashboard() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '32px' }}>
 
         {flashcardCount > 0 && (
-          <Link
-            to={`/study/${subject.id}/spaced`}
-            className="mode-card mode-flashcard"
-          >
+          <Link to={studyUrl('spaced')} className="mode-card mode-flashcard">
             <div className="mode-glyph">◈</div>
             <div className="mode-body">
               <div className="mode-title">Spaced Review</div>
@@ -132,33 +212,21 @@ export default function SubjectDashboard() {
           </Link>
         )}
 
-        {/* Free-form flashcard review */}
-        <Link
-          to={`/study/${subject.id}/flashcards`}
-          className="mode-card mode-flashcard"
-        >
+        <Link to={studyUrl('flashcards')} className="mode-card mode-flashcard">
           <div className="mode-glyph">▭</div>
           <div className="mode-body">
             <div className="mode-title">Review Flashcards</div>
-            <div className="mode-desc">
-              Free-form review of all cards, unscheduled.
-            </div>
+            <div className="mode-desc">Free-form review of all cards, unscheduled.</div>
           </div>
           <div className="mode-badge">{flashcardCount} cards</div>
           <div className="mode-arrow">›</div>
         </Link>
 
-        {/* MCQ practice */}
-        <Link
-          to={`/study/${subject.id}/mcq`}
-          className="mode-card mode-mcq"
-        >
+        <Link to={studyUrl('mcq')} className="mode-card mode-mcq">
           <div className="mode-glyph">◎</div>
           <div className="mode-body">
             <div className="mode-title">Practice MCQs</div>
-            <div className="mode-desc">
-              Continuous multiple-choice review, unscored.
-            </div>
+            <div className="mode-desc">Continuous multiple-choice review, unscored.</div>
           </div>
           <div className="mode-badge">{mcqCount} questions</div>
           <div className="mode-arrow">›</div>
@@ -184,6 +252,11 @@ export default function SubjectDashboard() {
             </div>
             <div className="mode-desc">
               A formal, graded examination drawn from the MCQ pool.
+              {activeTag && (
+                <span style={{ color: 'var(--accent-dim)', marginLeft: '6px' }}>
+                  · {activeTag} only
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -209,7 +282,7 @@ export default function SubjectDashboard() {
             />
           </div>
           <div style={{ marginLeft: 'auto' }}>
-            <Link to={`/study/${subject.id}/quiz?limit=${quizLimit}&time=${timeLimit}`}>
+            <Link to={studyUrl('quiz', `limit=${quizLimit}&time=${timeLimit}`)}>
               <button disabled={mcqCount === 0 || quizLimit < 1}>
                 Begin Exam →
               </button>

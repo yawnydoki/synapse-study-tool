@@ -53,7 +53,8 @@ FLASHCARD SCHEMA:
 {
   "type": "flashcard",
   "front": "The question or term",
-  "back": "The answer or definition"
+  "back": "The answer or definition",
+  "tag": "Module 1"  (optional)
 }
 
 MCQ SCHEMA:
@@ -61,7 +62,8 @@ MCQ SCHEMA:
   "type": "mcq",
   "question": "The full question text",
   "options": ["Option A", "Option B", "Option C", "Option D"],
-  "correctAnswer": "Option A"
+  "correctAnswer": "Option A",
+  "tag": "Module 1"  (optional)
 }
 
 REQUIREMENTS:
@@ -95,6 +97,7 @@ export default function BulkImport() {
   const [status, setStatus]         = useState(null);   // null | { type, message }
   const [uploading, setUploading]   = useState(false);
   const [copied, setCopied]         = useState(false);
+  const [tag, setTag]                 = useState('');
   const [promptUnlocked, setPromptUnlocked] = useState(
     () => localStorage.getItem('synapse_prompt_unlocked') === 'true'
   );
@@ -182,7 +185,10 @@ export default function BulkImport() {
       const batch  = writeBatch(db);
       const colRef = collection(db, 'subjects', subjectId, 'questions');
       valid.forEach(({ item }) => {
-        batch.set(doc(colRef), item);
+        const itemWithTag = tag.trim()
+          ? { ...item, tag: tag.trim() }
+          : item;
+        batch.set(doc(colRef), itemWithTag);
       });
       await batch.commit();
       setStatus({ type: 'success', message: `Uploaded ${valid.length} items successfully.` });
@@ -290,6 +296,18 @@ export default function BulkImport() {
             <option key={s.id} value={s.id}>{s.title}</option>
           ))}
         </select>
+      </div>
+
+      {/* ── Tag input ── */}
+      <div style={{ marginBottom: '20px' }}>
+        <label>Tag <span style={{ color: 'var(--text-faint)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional — e.g. Module 1, Chapter 3)</span></label>
+        <input
+          type="text"
+          value={tag}
+          onChange={(e) => setTag(e.target.value)}
+          placeholder="Leave blank to import without a tag…"
+          style={{ marginTop: '6px' }}
+        />
       </div>
 
       {/* ── JSON input ── */}

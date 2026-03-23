@@ -123,6 +123,7 @@ export default function StudyDeck() {
   const [searchParams]       = useSearchParams();
   const limitParam           = searchParams.get('limit');
   const timeParam            = searchParams.get('time');
+  const tagParam             = searchParams.get('tag');   // optional tag filter
 
   const isSpaced = mode === 'spaced';
 
@@ -157,6 +158,11 @@ export default function StudyDeck() {
       }
       if (mode === 'mcq' || mode === 'quiz') {
         data = data.filter((q) => q.type === 'mcq');
+      }
+
+      // Apply tag filter if provided
+      if (tagParam) {
+        data = data.filter((q) => q.tag === tagParam);
       }
 
       if (isSpaced) {
@@ -472,6 +478,11 @@ export default function StudyDeck() {
             : mode === 'quiz'    ? 'Examination in progress'
             : mode === 'flashcards' ? 'Reviewing flashcards'
             :                     'Practising MCQs'}
+            {tagParam && (
+              <span style={{ color: 'var(--accent-dim)', marginLeft: '6px' }}>
+                · {tagParam}
+              </span>
+            )}
           </span>
           <span className="progress-fraction">
             {currentIndex + 1} / {questions.length}
