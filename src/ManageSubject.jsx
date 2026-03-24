@@ -42,10 +42,14 @@ export default function ManageSubject() {
 
   const handleSave = async (id) => {
     if (editForm.type === 'mcq') {
-      const trimmedOptions = editForm.options.map((o) => o.trim());
+      const trimmedOptions = editForm.options.map((o) => o.trim()).filter(Boolean);
       const trimmedAnswer  = editForm.correctAnswer?.trim();
+      if (trimmedOptions.length < 2) {
+        alert('MCQs must have at least 2 options.');
+        return;
+      }
       if (!trimmedOptions.includes(trimmedAnswer)) {
-        alert('The correct answer must exactly match one of the four options.');
+        alert('The correct answer must exactly match one of the options.');
         return;
       }
       const cleaned = { ...editForm, options: trimmedOptions, correctAnswer: trimmedAnswer };
@@ -400,8 +404,42 @@ export default function ManageSubject() {
                       />
                     </div>
                     <div>
-                      <label>Options</label>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '6px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <label style={{ margin: 0 }}>Options</label>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          {(editForm.options || []).length > 2 && (
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ padding: '2px 10px', fontSize: '0.78rem' }}
+                              onClick={() => {
+                                const next = editForm.options.slice(0, -1);
+                                const stillValid = next.includes(editForm.correctAnswer);
+                                setEditForm({
+                                  ...editForm,
+                                  options: next,
+                                  correctAnswer: stillValid ? editForm.correctAnswer : '',
+                                });
+                              }}
+                            >
+                              − Remove
+                            </button>
+                          )}
+                          {(editForm.options || []).length < 4 && (
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ padding: '2px 10px', fontSize: '0.78rem' }}
+                              onClick={() =>
+                                setEditForm({ ...editForm, options: [...editForm.options, ''] })
+                              }
+                            >
+                              + Add
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
                         {(editForm.options || []).map((opt, i) => (
                           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <span style={{

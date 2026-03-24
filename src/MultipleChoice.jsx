@@ -5,7 +5,15 @@ export default function MultipleChoice({ question, options, correctAnswer, onNex
   const [shuffledOptions, setShuffledOptions] = useState([]);
 
   useEffect(() => {
-    setShuffledOptions([...options].sort(() => Math.random() - 0.5));
+    // Don't shuffle True/False — keep True before False
+    const isTrueFalse =
+      options.length === 2 &&
+      options.map((o) => o.trim().toLowerCase()).sort().join() === 'false,true';
+    setShuffledOptions(
+      isTrueFalse
+        ? ['True', 'False']
+        : [...options].sort(() => Math.random() - 0.5)
+    );
     setSelected(null);
   }, [question, options]);
 

@@ -5,7 +5,7 @@ import { collection, writeBatch, doc, getDocs } from 'firebase/firestore';
 // ── Schema ────────────────────────────────────────────────────────
 // Valid item shapes:
 //   { type: 'flashcard', front: string, back: string }
-//   { type: 'mcq', question: string, options: string[4], correctAnswer: string }
+//   { type: 'mcq', question: string, options: string[2-4], correctAnswer: string }
 
 function validateItem(item, index) {
   const errors = [];
@@ -28,8 +28,8 @@ function validateItem(item, index) {
   if (item.type === 'mcq') {
     if (!item.question || typeof item.question !== 'string' || !item.question.trim())
       errors.push('"question" is missing or empty');
-    if (!Array.isArray(item.options) || item.options.length !== 4)
-      errors.push('"options" must be an array of exactly 4 strings');
+    if (!Array.isArray(item.options) || item.options.length < 2 || item.options.length > 4)
+      errors.push('"options" must be an array of 2 to 4 strings');
     else if (item.options.some((o) => typeof o !== 'string' || !o.trim()))
       errors.push('all options must be non-empty strings');
     if (!item.correctAnswer || typeof item.correctAnswer !== 'string' || !item.correctAnswer.trim())
@@ -61,22 +61,23 @@ MCQ SCHEMA:
 {
   "type": "mcq",
   "question": "The full question text",
-  "options": ["Option A", "Option B", "Option C", "Option D"],
+  "options": ["Option A", "Option B", "Option C", "Option D"],  (2 to 4 options)
   "correctAnswer": "Option A",
   "tag": "Module 1"  (optional)
 }
 
 REQUIREMENTS:
-- "correctAnswer" must be an exact copy of one of the four strings in "options"
-- options array must have exactly 4 items
+- "correctAnswer" must be an exact copy of one of the strings in "options"
+- options array must have between 2 and 4 items
+- For True/False questions use exactly 2 options: ["True", "False"]
 - All fields are required — never omit any
 
 EXAMPLE OUTPUT (2 items):
 [
   {
     "type": "flashcard",
-    "front": "What is photosynthesis?",
-    "back": "The process by which plants convert sunlight into glucose using CO2 and water."
+    "front": "The process by which plants convert sunlight into glucose using CO2 and water.",
+    "back": "Photosynthesis"
   },
   {
     "type": "mcq",
@@ -169,7 +170,12 @@ export default function BulkImport() {
       ...validateItem(item, i),
     }));
 
-    setParsed({ items, results });
+    // Collect tags that were already present in the JSON
+    const detectedTags = [...new Set(
+      items.map((item) => item?.tag?.trim()).filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+    setParsed({ items, results, detectedTags });
   };
 
   // ── Upload valid items ────────────────────────────────────────────
@@ -185,8 +191,10 @@ export default function BulkImport() {
       const batch  = writeBatch(db);
       const colRef = collection(db, 'subjects', subjectId, 'questions');
       valid.forEach(({ item }) => {
-        const itemWithTag = tag.trim()
-          ? { ...item, tag: tag.trim() }
+        // Priority: item's own tag > manual tag input > no tag
+        const resolvedTag = item.tag?.trim() || tag.trim() || null;
+        const itemWithTag = resolvedTag
+          ? { ...item, tag: resolvedTag }
           : item;
         batch.set(doc(colRef), itemWithTag);
       });
@@ -300,12 +308,17 @@ export default function BulkImport() {
 
       {/* ── Tag input ── */}
       <div style={{ marginBottom: '20px' }}>
-        <label>Tag <span style={{ color: 'var(--text-faint)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional — e.g. Module 1, Chapter 3)</span></label>
+        <label>
+          Fallback Tag{' '}
+          <span style={{ color: 'var(--text-faint)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+            (optional — applied to items that have no tag of their own)
+          </span>
+        </label>
         <input
           type="text"
           value={tag}
           onChange={(e) => setTag(e.target.value)}
-          placeholder="Leave blank to import without a tag…"
+          placeholder="e.g. Module 1 — leave blank if your JSON already has tags…"
           style={{ marginTop: '6px' }}
         />
       </div>
@@ -368,20 +381,44 @@ export default function BulkImport() {
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius)',
           }}>
-            <div style={{ display: 'flex', gap: '20px' }}>
-              <span style={{ fontSize: '0.88rem' }}>
-                <span style={{ fontWeight: 700, color: '#9fc090' }}>{validCount}</span>
-                <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>valid</span>
-              </span>
-              {invalidCount > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', gap: '20px' }}>
                 <span style={{ fontSize: '0.88rem' }}>
-                  <span style={{ fontWeight: 700, color: '#c08080' }}>{invalidCount}</span>
-                  <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>invalid</span>
+                  <span style={{ fontWeight: 700, color: '#9fc090' }}>{validCount}</span>
+                  <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>valid</span>
                 </span>
+                {invalidCount > 0 && (
+                  <span style={{ fontSize: '0.88rem' }}>
+                    <span style={{ fontWeight: 700, color: '#c08080' }}>{invalidCount}</span>
+                    <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>invalid</span>
+                  </span>
+                )}
+                <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+                  {parsed.results.length} total
+                </span>
+              </div>
+              {parsed.detectedTags?.length > 0 && (
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-faint)', fontStyle: 'italic' }}>
+                    tags detected:
+                  </span>
+                  {parsed.detectedTags.map((t) => (
+                    <span key={t} style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 600,
+                      letterSpacing: '1px',
+                      textTransform: 'uppercase',
+                      color: 'var(--accent-dim)',
+                      background: 'var(--bg-deep)',
+                      border: '1px solid var(--border)',
+                      padding: '2px 8px',
+                      borderRadius: '2px',
+                    }}>
+                      {t}
+                    </span>
+                  ))}
+                </div>
               )}
-              <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
-                {parsed.results.length} total
-              </span>
             </div>
 
             <div style={{ display: 'flex', gap: '8px' }}>
