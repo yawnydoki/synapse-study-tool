@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { useToast } from './ToastContext';
 import { db } from './firebase';
 import { collection, addDoc, getDocs } from 'firebase/firestore';
 
 export default function DataEntry() {
+  const toast = useToast();
   const [subjects, setSubjects]       = useState([]);
   const [subjectId, setSubjectId]     = useState('');
   const [type, setType]               = useState('flashcard');
@@ -77,7 +79,7 @@ export default function DataEntry() {
       );
     }
 
-    alert('Added to Synapse!');
+    toast(`${type === 'flashcard' ? 'Flashcard' : 'MCQ'} added${tag.trim() ? ` · ${tag.trim()}` : ''}`);
   };
 
   const handleOptionCount = (count) => {

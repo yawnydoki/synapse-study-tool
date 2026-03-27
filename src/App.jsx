@@ -7,9 +7,11 @@ import BulkImport from './BulkImport';
 import AddSubject from './AddSubject';
 import SubjectDashboard from './SubjectDashboard';
 import ManageSubject from './ManageSubject';
+import { ToastProvider } from './ToastContext';
 
 export default function App() {
   return (
+    <ToastProvider>
     <BrowserRouter>
       <div className="app-wrapper">
 
@@ -70,5 +72,6 @@ export default function App() {
 
       </div>
     </BrowserRouter>
+    </ToastProvider>
   );
 }

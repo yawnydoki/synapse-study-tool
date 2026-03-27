@@ -16,6 +16,8 @@ export default function ManageSubject() {
   const [editForm, setEditForm]               = useState({});
   const [dangerOpen, setDangerOpen]           = useState(false);
   const [deleting, setDeleting]               = useState(false);
+  const [typeFilter, setTypeFilter]           = useState('');   // '' | 'flashcard' | 'mcq'
+  const [tagFilter, setTagFilter]             = useState('');   // '' | tag string
 
   useEffect(() => {
     const fetchQuestions = async () => {
@@ -118,11 +120,14 @@ export default function ManageSubject() {
   // ── Derived ───────────────────────────────────────────────────────
   const filtered = questions.filter((q) => {
     const t = searchTerm.toLowerCase();
-    return (
+    const matchesSearch = !t || (
       q.front?.toLowerCase().includes(t) ||
       q.back?.toLowerCase().includes(t)  ||
       q.question?.toLowerCase().includes(t)
     );
+    const matchesType = !typeFilter || q.type === typeFilter;
+    const matchesTag  = !tagFilter  || q.tag  === tagFilter;
+    return matchesSearch && matchesType && matchesTag;
   });
 
   const flashcardCount = questions.filter((q) => q.type === 'flashcard').length;
@@ -301,6 +306,90 @@ export default function ManageSubject() {
           onChange={(e) => setSearchTerm(e.target.value)}
         />
       </div>
+
+      {/* ── Filter row ── */}
+      {(flashcardCount > 0 && mcqCount > 0) || tags.length > 0 ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px', alignItems: 'center' }}>
+
+          {/* Type filters — only show if both types exist */}
+          {flashcardCount > 0 && mcqCount > 0 && (
+            <>
+              {['', 'flashcard', 'mcq'].map((val) => {
+                const label = val === '' ? `All (${questions.length})` : val === 'flashcard' ? `Flashcards (${flashcardCount})` : `MCQs (${mcqCount})`;
+                const active = typeFilter === val;
+                return (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setTypeFilter(val)}
+                    style={{
+                      padding: '4px 12px',
+                      fontSize: '0.75rem',
+                      fontWeight: active ? 700 : 400,
+                      background: active ? 'var(--primary)' : 'transparent',
+                      border: `1px solid ${active ? 'var(--accent-dim)' : 'var(--border-light)'}`,
+                      color: active ? '#e8e4c9' : 'var(--text-muted)',
+                      borderRadius: '2px',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          {/* Divider between type and tag filters */}
+          {flashcardCount > 0 && mcqCount > 0 && tags.length > 0 && (
+            <span style={{ color: 'var(--text-faint)', fontSize: '0.75rem' }}>·</span>
+          )}
+
+          {/* Tag filters */}
+          {tags.map((t) => {
+            const active = tagFilter === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTagFilter(active ? '' : t)}
+                style={{
+                  padding: '4px 12px',
+                  fontSize: '0.75rem',
+                  fontWeight: active ? 700 : 400,
+                  background: active ? 'var(--surface-2)' : 'transparent',
+                  border: `1px solid ${active ? 'var(--accent-dim)' : 'var(--border-light)'}`,
+                  color: active ? 'var(--accent)' : 'var(--text-muted)',
+                  borderRadius: '2px',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {t}
+              </button>
+            );
+          })}
+
+          {/* Clear all filters — only show when something is active */}
+          {(typeFilter || tagFilter) && (
+            <button
+              type="button"
+              onClick={() => { setTypeFilter(''); setTagFilter(''); }}
+              style={{
+                padding: '4px 10px',
+                fontSize: '0.72rem',
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                color: 'var(--text-faint)',
+                borderRadius: '2px',
+                marginLeft: '2px',
+              }}
+            >
+              ✕ clear
+            </button>
+          )}
+
+        </div>
+      ) : null}
 
       {/* ── Item list ── */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
