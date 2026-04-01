@@ -76,8 +76,8 @@ EXAMPLE OUTPUT (2 items):
 [
   {
     "type": "flashcard",
-    "front": "The process by which plants convert sunlight into glucose using CO2 and water.",
-    "back": "Photosynthesis"
+    "front": "What is photosynthesis?",
+    "back": "The process by which plants convert sunlight into glucose using CO2 and water."
   },
   {
     "type": "mcq",
@@ -89,6 +89,29 @@ EXAMPLE OUTPUT (2 items):
 
 Now generate [NUMBER] items from the following material:`;
 
+// ── Duplicate detection helpers ───────────────────────────────────
+function normalise(str) {
+  return (str || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function getQuestion(item) {
+  return item.type === 'flashcard' ? item.front : item.question;
+}
+
+function getAnswer(item) {
+  return item.type === 'flashcard' ? item.back : item.correctAnswer;
+}
+
+// Returns 'exact' | 'conflict' | null
+function checkDuplicate(incoming, existing) {
+  const inQ = normalise(getQuestion(incoming));
+  const exQ = normalise(getQuestion(existing));
+  if (inQ !== exQ || incoming.type !== existing.type) return null;
+  const inA = normalise(getAnswer(incoming));
+  const exA = normalise(getAnswer(existing));
+  return inA === exA ? 'exact' : 'conflict';
+}
+
 // ── Component ─────────────────────────────────────────────────────
 export default function BulkImport() {
   const [subjects, setSubjects]     = useState([]);
@@ -97,8 +120,10 @@ export default function BulkImport() {
   const [parsed, setParsed]         = useState(null);   // null | { items, results }
   const [status, setStatus]         = useState(null);   // null | { type, message }
   const [uploading, setUploading]   = useState(false);
+  const [resolutions, setResolutions] = useState({});  // index -> 'incoming' | 'existing' | 'both'
   const [copied, setCopied]         = useState(false);
   const [tag, setTag]                 = useState('');
+  const [existingTags, setExistingTags] = useState([]);
   const [promptUnlocked, setPromptUnlocked] = useState(
     () => localStorage.getItem('synapse_prompt_unlocked') === 'true'
   );
@@ -115,6 +140,26 @@ export default function BulkImport() {
     };
     fetchSubjects();
   }, []);
+
+  // Fetch existing tags for the selected subject
+  useEffect(() => {
+    if (!subjectId) return;
+    const fetchTags = async () => {
+      const snap = await getDocs(collection(db, 'subjects', subjectId, 'questions'));
+      const tagSet = new Set();
+      snap.docs.forEach((d) => {
+        const t = d.data().tag;
+        if (t) tagSet.add(t);
+      });
+      setExistingTags(
+        [...tagSet].sort((a, b) =>
+          a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+        )
+      );
+      setTag(''); // reset tag when subject changes
+    };
+    fetchTags();
+  }, [subjectId]);
 
   // ── Copy prompt ───────────────────────────────────────────────────
   const handleCopyPrompt = async () => {
@@ -137,7 +182,7 @@ export default function BulkImport() {
   };
 
   // ── Parse & validate ──────────────────────────────────────────────
-  const handleParse = () => {
+  const handleParse = async () => {
     setStatus(null);
     setParsed(null);
 
@@ -164,25 +209,73 @@ export default function BulkImport() {
       return;
     }
 
-    const results = items.map((item, i) => ({
-      item,
-      index: i,
-      ...validateItem(item, i),
-    }));
+    // Fetch existing questions for duplicate detection
+    let existing = [];
+    try {
+      const snap = await getDocs(collection(db, 'subjects', subjectId, 'questions'));
+      existing = snap.docs.map((d) => d.data());
+    } catch (_) {}
+
+    const results = items.map((item, i) => {
+      const validation = validateItem(item, i);
+
+      // Only check duplicates for valid items
+      let dupStatus = null;    // null | 'exact' | 'conflict'
+      let existingMatch = null;
+
+      if (validation.valid) {
+        for (const ex of existing) {
+          const result = checkDuplicate(item, ex);
+          if (result) {
+            dupStatus     = result;
+            existingMatch = ex;
+            break;
+          }
+        }
+      }
+
+      return { item, index: i, dupStatus, existingMatch, ...validation };
+    });
 
     // Collect tags that were already present in the JSON
     const detectedTags = [...new Set(
       items.map((item) => item?.tag?.trim()).filter(Boolean)
     )].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
 
+    setResolutions({});
     setParsed({ items, results, detectedTags });
   };
 
   // ── Upload valid items ────────────────────────────────────────────
   const handleUpload = async () => {
     if (!subjectId || !parsed) return;
-    const valid = parsed.results.filter((r) => r.valid);
-    if (valid.length === 0) return;
+
+    // Gather items to upload:
+    //  - valid + no duplicate  → always upload
+    //  - exact duplicate       → skip
+    //  - conflict + 'incoming' → upload incoming
+    //  - conflict + 'both'     → upload incoming (existing stays)
+    //  - conflict + unresolved → skip (user must decide)
+    const toUpload = parsed.results.filter(({ valid, dupStatus, index }) => {
+      if (!valid) return false;
+      if (!dupStatus) return true;
+      if (dupStatus === 'exact') return false;
+      if (dupStatus === 'conflict') {
+        const res = resolutions[index];
+        return res === 'incoming' || res === 'both';
+      }
+      return false;
+    });
+
+    if (toUpload.length === 0) {
+      setStatus({ type: 'error', message: 'Nothing to upload. Resolve any conflicts first.' });
+      return;
+    }
+
+    // Warn if unresolved conflicts remain
+    const unresolvedCount = parsed.results.filter(
+      ({ valid, dupStatus, index }) => valid && dupStatus === 'conflict' && !resolutions[index]
+    ).length;
 
     setUploading(true);
     setStatus(null);
@@ -190,18 +283,20 @@ export default function BulkImport() {
     try {
       const batch  = writeBatch(db);
       const colRef = collection(db, 'subjects', subjectId, 'questions');
-      valid.forEach(({ item }) => {
-        // Priority: item's own tag > manual tag input > no tag
+      toUpload.forEach(({ item }) => {
         const resolvedTag = item.tag?.trim() || tag.trim() || null;
-        const itemWithTag = resolvedTag
-          ? { ...item, tag: resolvedTag }
-          : item;
+        const itemWithTag = resolvedTag ? { ...item, tag: resolvedTag } : item;
         batch.set(doc(colRef), itemWithTag);
       });
       await batch.commit();
-      setStatus({ type: 'success', message: `Uploaded ${valid.length} items successfully.` });
+
+      const skippedMsg = unresolvedCount > 0
+        ? ` · ${unresolvedCount} unresolved conflict${unresolvedCount > 1 ? 's' : ''} skipped.`
+        : '';
+      setStatus({ type: 'success', message: `Uploaded ${toUpload.length} items successfully.${skippedMsg}` });
       setJsonInput('');
       setParsed(null);
+      setResolutions({});
     } catch (e) {
       setStatus({ type: 'error', message: `Upload failed: ${e.message}` });
     } finally {
@@ -210,8 +305,15 @@ export default function BulkImport() {
   };
 
   // ── Derived counts ────────────────────────────────────────────────
-  const validCount   = parsed?.results.filter((r) => r.valid).length  ?? 0;
-  const invalidCount = parsed?.results.filter((r) => !r.valid).length ?? 0;
+  const newCount        = parsed?.results.filter((r) => r.valid && !r.dupStatus).length          ?? 0;
+  const exactDupCount   = parsed?.results.filter((r) => r.valid && r.dupStatus === 'exact').length    ?? 0;
+  const conflictCount   = parsed?.results.filter((r) => r.valid && r.dupStatus === 'conflict').length ?? 0;
+  const invalidCount    = parsed?.results.filter((r) => !r.valid).length                             ?? 0;
+  const validCount      = newCount; // kept for upload button (only new + resolved conflicts)
+  const resolvedCount   = Object.keys(resolutions).length;
+  const uploadableCount = newCount + parsed?.results.filter(
+    ({ valid, dupStatus, index }) => valid && dupStatus === 'conflict' && (resolutions[index] === 'incoming' || resolutions[index] === 'both')
+  ).length ?? 0;
 
   // ── Render ────────────────────────────────────────────────────────
   return (
@@ -319,8 +421,36 @@ export default function BulkImport() {
           value={tag}
           onChange={(e) => setTag(e.target.value)}
           placeholder="e.g. Module 1 — leave blank if your JSON already has tags…"
+          list="bulk-existing-tags"
           style={{ marginTop: '6px' }}
         />
+        <datalist id="bulk-existing-tags">
+          {existingTags.map((t) => <option key={t} value={t} />)}
+        </datalist>
+        {existingTags.length > 0 && (
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
+            {existingTags.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTag((prev) => prev === t ? '' : t)}
+                style={{
+                  padding: '3px 10px',
+                  fontSize: '0.72rem',
+                  fontWeight: 600,
+                  letterSpacing: '0.8px',
+                  background: tag === t ? 'var(--primary)' : 'transparent',
+                  border: `1px solid ${tag === t ? 'var(--accent-dim)' : 'var(--border-light)'}`,
+                  color: tag === t ? '#e8e4c9' : 'var(--text-muted)',
+                  borderRadius: '2px',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── JSON input ── */}
@@ -382,11 +512,26 @@ export default function BulkImport() {
             borderRadius: 'var(--radius)',
           }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ display: 'flex', gap: '20px' }}>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '0.88rem' }}>
-                  <span style={{ fontWeight: 700, color: '#9fc090' }}>{validCount}</span>
-                  <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>valid</span>
+                  <span style={{ fontWeight: 700, color: '#9fc090' }}>{newCount}</span>
+                  <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>new</span>
                 </span>
+                {exactDupCount > 0 && (
+                  <span style={{ fontSize: '0.88rem' }}>
+                    <span style={{ fontWeight: 700, color: 'var(--text-faint)' }}>{exactDupCount}</span>
+                    <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>exact duplicate{exactDupCount > 1 ? 's' : ''}</span>
+                  </span>
+                )}
+                {conflictCount > 0 && (
+                  <span style={{ fontSize: '0.88rem' }}>
+                    <span style={{ fontWeight: 700, color: '#c8a060' }}>{conflictCount}</span>
+                    <span style={{ color: 'var(--text-muted)', marginLeft: '5px' }}>conflict{conflictCount > 1 ? 's' : ''}</span>
+                    {resolvedCount > 0 && (
+                      <span style={{ color: 'var(--text-faint)', marginLeft: '5px' }}>({resolvedCount} resolved)</span>
+                    )}
+                  </span>
+                )}
                 {invalidCount > 0 && (
                   <span style={{ fontSize: '0.88rem' }}>
                     <span style={{ fontWeight: 700, color: '#c08080' }}>{invalidCount}</span>
@@ -431,10 +576,10 @@ export default function BulkImport() {
               </button>
               <button
                 onClick={handleUpload}
-                disabled={uploading || validCount === 0}
+                disabled={uploading || uploadableCount === 0}
                 style={{ padding: '6px 16px', fontSize: '0.82rem' }}
               >
-                {uploading ? 'Uploading…' : `Upload ${validCount} item${validCount !== 1 ? 's' : ''} →`}
+                {uploading ? 'Uploading…' : `Upload ${uploadableCount} item${uploadableCount !== 1 ? 's' : ''} →`}
               </button>
             </div>
           </div>
